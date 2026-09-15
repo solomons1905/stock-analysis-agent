@@ -1,6 +1,6 @@
 """
 Scoring Module
-Combines technical, fundamental, and sentiment scores to generate a unified score (0-100)
+Combines the technical, fundamental and sentiment scores into one 0-100 score.
 """
 
 import logging
@@ -10,341 +10,255 @@ logger = logging.getLogger(__name__)
 
 
 class StockScorer:
-    """Scores stocks based on multiple analysis dimensions"""
+    """Blends the analysis dimensions into a single investment score."""
 
-    # Default weights (can be customized)
-    WEIGHTS = {
-        'technical': 0.40,  # 40%
-        'fundamental': 0.35,  # 35%
-        'sentiment': 0.25,   # 25%
+    DEFAULT_WEIGHTS = {
+        'technical': 0.40,
+        'fundamental': 0.35,
+        'sentiment': 0.25,
     }
 
-    # Signal to score mapping
     SIGNAL_SCORES = {
-        'strong_buy': 95,
-        'buy': 75,
-        'neutral': 50,
-        'sell': 25,
-        'strong_sell': 5,
+        'strong_buy': 95.0,
+        'buy': 75.0,
+        'neutral': 50.0,
+        'sell': 25.0,
+        'strong_sell': 5.0,
     }
 
     def __init__(self, weights: Optional[Dict[str, float]] = None):
         """
-        Initialize scorer with optional custom weights
-
         Args:
-            weights: Dictionary with 'technical', 'fundamental', 'sentiment' weights
+            weights: Optional override. Accepts either the short keys
+                ('technical') or the config.yml style keys
+                ('technical_weight'); both spellings are understood.
         """
         self.logger = logging.getLogger(__name__)
+        # Copy, so the class-level defaults are never mutated.
+        self.weights = dict(self.DEFAULT_WEIGHTS)
+
         if weights:
-            self.WEIGHTS = weights
+            for name in self.DEFAULT_WEIGHTS:
+                # config.yml uses "technical_weight"; accept "technical" too.
+                value = weights.get(f"{name}_weight", weights.get(name))
+                if value is not None:
+                    try:
+                        self.weights[name] = float(value)
+                    except (TypeError, ValueError):
+                        self.logger.warning(
+                            "Ignoring non-numeric weight for %s: %r", name, value)
 
-        # Verify weights sum to 1.0
-        total = sum(self.WEIGHTS.values())
-        if abs(total - 1.0) > 0.01:
-            self.logger.warning(f"Weights don't sum to 1.0 (sum={total}), normalizing...")
-            for key in self.WEIGHTS:
-                self.WEIGHTS[key] = self.WEIGHTS[key] / total
+        total = sum(self.weights.values())
+        if total <= 0:
+            self.logger.warning("Weights sum to zero, falling back to defaults")
+            self.weights = dict(self.DEFAULT_WEIGHTS)
+        elif abs(total - 1.0) > 0.01:
+            self.logger.info("Normalising weights (sum was %.3f)", total)
+            self.weights = {k: v / total for k, v in self.weights.items()}
 
-    # ==================== Technical Score ====================
+    # Backwards-compatible alias for older code that referenced WEIGHTS.
+    @property
+    def WEIGHTS(self) -> Dict[str, float]:  # noqa: N802 - kept for compatibility
+        return self.weights
+
+    # ------------------------------------------------------------------ #
+    # Technical
+    # ------------------------------------------------------------------ #
 
     def calculate_technical_score(self, technical_data: Dict) -> float:
-        """
-        Calculate technical analysis score (0-100)
-        Based on moving averages, RSI, MACD, Bollinger Bands, Volume
-
-        Args:
-            technical_data: Dictionary with technical indicators
-
-        Returns:
-            Score 0-100
-        """
+        """Weighted blend of the trend, RSI, MACD, Bollinger and volume signals."""
         if not technical_data:
             return 50.0
 
         try:
-            scores = []
-            weights = []
+            scores, weights = [], []
 
-            # Moving averages trend (20% of technical score)
-            ma_data = technical_data.get('moving_averages', {})
+            trend_scores = {
+                'strong_uptrend': 90.0,
+                'uptrend': 70.0,
+                'neutral': 50.0,
+                'downtrend': 30.0,
+                'strong_downtrend': 10.0,
+            }
+            ma_data = technical_data.get('moving_averages') or {}
             if ma_data:
-                trend = ma_data.get('trend', 'neutral')
-                if trend == 'strong_uptrend':
-                    ma_score = 90.0
-                elif trend == 'uptrend':
-                    ma_score = 70.0
-                elif trend == 'neutral':
-                    ma_score = 50.0
-                elif trend == 'downtrend':
-                    ma_score = 30.0
-                else:
-                    ma_score = 10.0
+                scores.append(trend_scores.get(ma_data.get('trend'), 50.0))
+                weights.append(0.25)
 
-                scores.append(ma_score)
-                weights.append(0.20)
-
-            # RSI (20% of technical score)
             rsi = technical_data.get('rsi')
             if rsi is not None:
                 if rsi < 30:
-                    rsi_score = 75.0
+                    rsi_score = 85.0       # oversold, a bounce is likely
                 elif rsi < 45:
                     rsi_score = 70.0
                 elif rsi < 55:
                     rsi_score = 50.0
                 elif rsi < 70:
-                    rsi_score = 30.0
+                    rsi_score = 35.0
                 else:
-                    rsi_score = 20.0
-
+                    rsi_score = 15.0       # overbought
                 scores.append(rsi_score)
+                weights.append(0.25)
+
+            if technical_data.get('macd'):
+                scores.append(self.SIGNAL_SCORES.get(
+                    technical_data.get('macd_signal'), 50.0))
                 weights.append(0.20)
 
-            # MACD signal (20% of technical score)
-            macd_signal = technical_data.get('macd_signal', 'neutral')
-            macd_score = self.SIGNAL_SCORES.get(macd_signal, 50)
-            scores.append(macd_score)
-            weights.append(0.20)
+            if technical_data.get('bollinger_bands'):
+                scores.append(self.SIGNAL_SCORES.get(
+                    technical_data.get('bollinger_signal'), 50.0))
+                weights.append(0.15)
 
-            # Bollinger Bands signal (20% of technical score)
-            bb_signal = technical_data.get('bollinger_signal', 'neutral')
-            bb_score = self.SIGNAL_SCORES.get(bb_signal, 50)
-            scores.append(bb_score)
-            weights.append(0.20)
+            if technical_data.get('volume'):
+                volume_scores = {'strong': 70.0, 'weak': 35.0, 'neutral': 50.0}
+                scores.append(volume_scores.get(
+                    technical_data.get('volume_signal'), 50.0))
+                weights.append(0.15)
 
-            # Volume signal (20% of technical score)
-            volume_signal = technical_data.get('volume_signal', 'neutral')
-            if volume_signal == 'strong':
-                volume_score = 75.0
-            elif volume_signal == 'weak':
-                volume_score = 30.0
-            else:
-                volume_score = 50.0
-            scores.append(volume_score)
-            weights.append(0.20)
+            if not scores:
+                return 50.0
 
-            # Calculate weighted average
-            if scores:
-                technical_score = sum(s * w for s, w in zip(scores, weights)) / sum(weights) if sum(weights) > 0 else 50.0
-            else:
-                technical_score = 50.0
+            total_weight = sum(weights)
+            blended = sum(s * w for s, w in zip(scores, weights)) / total_weight
+            return round(blended, 2)
 
-            return round(technical_score, 2)
-
-        except Exception as e:
-            self.logger.error(f"Error calculating technical score: {str(e)}")
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("Technical scoring failed: %s", exc)
             return 50.0
 
-    # ==================== Fundamental Score ====================
+    # ------------------------------------------------------------------ #
+    # Fundamental
+    # ------------------------------------------------------------------ #
 
     def calculate_fundamental_score(self, fundamental_data: Dict) -> float:
-        """
-        Calculate fundamental analysis score (0-100)
-        Based on P/E, ROE, margins, growth, debt
-
-        Args:
-            fundamental_data: Dictionary with fundamental metrics
-
-        Returns:
-            Score 0-100
-        """
+        """Average of the fundamental metrics that actually had data."""
         if not fundamental_data:
             return 50.0
 
         try:
             scores = []
+            for metric in ('pe_ratio', 'roe', 'profit_margin', 'debt_to_equity',
+                           'revenue_growth', 'earnings_growth', 'dividend_yield'):
+                entry = fundamental_data.get(metric)
+                if isinstance(entry, dict) and entry.get('score') is not None:
+                    scores.append(float(entry['score']))
 
-            # Extract individual metric scores
-            for metric in ['pe_ratio', 'roe', 'profit_margin', 'debt_to_equity',
-                          'revenue_growth', 'earnings_growth', 'dividend_yield']:
-                metric_data = fundamental_data.get(metric, {})
-                if isinstance(metric_data, dict) and 'score' in metric_data:
-                    scores.append(metric_data['score'])
-
-            # Calculate average
             if scores:
-                fundamental_score = sum(scores) / len(scores)
-            else:
-                fundamental_score = fundamental_data.get('overall_score', 50.0)
+                return round(sum(scores) / len(scores), 2)
 
-            return round(fundamental_score, 2)
+            return float(fundamental_data.get('overall_score', 50.0))
 
-        except Exception as e:
-            self.logger.error(f"Error calculating fundamental score: {str(e)}")
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("Fundamental scoring failed: %s", exc)
             return 50.0
 
-    # ==================== Sentiment Score ====================
+    # ------------------------------------------------------------------ #
+    # Sentiment
+    # ------------------------------------------------------------------ #
 
-    def calculate_sentiment_score(self, news_sentiment: Dict) -> float:
+    def calculate_sentiment_score(self, news_sentiment: Optional[Dict]) -> float:
         """
-        Calculate sentiment score based on recent news
+        Score recent news sentiment.
 
-        Args:
-            news_sentiment: Dictionary with news data and sentiment scores
-
-        Returns:
-            Score 0-100
+        No news source is wired up yet, so this returns a neutral 50 and the
+        weighting simply spreads across the other two dimensions.
         """
         if not news_sentiment:
             return 50.0
 
         try:
-            sentiments = news_sentiment.get('sentiments', [])
-
+            sentiments = news_sentiment.get('sentiments') or []
             if not sentiments:
                 return 50.0
 
-            # Score each sentiment: positive (75), neutral (50), negative (25)
-            sentiment_scores = {
-                'positive': 75,
-                'neutral': 50,
-                'negative': 25,
-            }
+            mapping = {'positive': 75.0, 'neutral': 50.0, 'negative': 25.0}
+            scores = [mapping.get(s, 50.0) for s in sentiments]
+            return round(sum(scores) / len(scores), 2)
 
-            scores = [sentiment_scores.get(s, 50) for s in sentiments]
-            sentiment_score = sum(scores) / len(scores)
-
-            return round(sentiment_score, 2)
-
-        except Exception as e:
-            self.logger.error(f"Error calculating sentiment score: {str(e)}")
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("Sentiment scoring failed: %s", exc)
             return 50.0
 
-    # ==================== Overall Score ====================
+    # ------------------------------------------------------------------ #
+    # Overall
+    # ------------------------------------------------------------------ #
 
-    def calculate_overall_score(self,
-                               technical_score: float = 50.0,
-                               fundamental_score: float = 50.0,
-                               sentiment_score: float = 50.0) -> float:
-        """
-        Calculate overall investment score
-
-        Args:
-            technical_score: Technical analysis score (0-100)
-            fundamental_score: Fundamental analysis score (0-100)
-            sentiment_score: Sentiment analysis score (0-100)
-
-        Returns:
-            Overall score (0-100)
-        """
+    def calculate_overall_score(self, technical_score: float = 50.0,
+                                fundamental_score: float = 50.0,
+                                sentiment_score: float = 50.0) -> float:
+        """Weighted combination of the three dimensions."""
         try:
             overall = (
-                technical_score * self.WEIGHTS['technical'] +
-                fundamental_score * self.WEIGHTS['fundamental'] +
-                sentiment_score * self.WEIGHTS['sentiment']
+                technical_score * self.weights['technical']
+                + fundamental_score * self.weights['fundamental']
+                + sentiment_score * self.weights['sentiment']
             )
-
             return round(overall, 2)
-
-        except Exception as e:
-            self.logger.error(f"Error calculating overall score: {str(e)}")
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("Overall scoring failed: %s", exc)
             return 50.0
 
-    # ==================== Full Analysis ====================
+    def score(self, technical_data: Dict, fundamental_data: Dict,
+              news_sentiment: Optional[Dict] = None) -> Dict:
+        """Run the full scoring pipeline for one stock."""
+        technical_score = self.calculate_technical_score(technical_data)
+        fundamental_score = self.calculate_fundamental_score(fundamental_data)
+        sentiment_score = self.calculate_sentiment_score(news_sentiment)
 
-    def score(self,
-             technical_data: Dict,
-             fundamental_data: Dict,
-             news_sentiment: Optional[Dict] = None) -> Dict:
-        """
-        Perform complete scoring analysis
-
-        Args:
-            technical_data: Technical analysis results
-            fundamental_data: Fundamental analysis results
-            news_sentiment: News sentiment data (optional)
-
-        Returns:
-            Dictionary with all scores
-        """
-        try:
-            # Calculate individual scores
-            tech_score = self.calculate_technical_score(technical_data)
-            fund_score = self.calculate_fundamental_score(fundamental_data)
-            sent_score = self.calculate_sentiment_score(news_sentiment or {})
-
-            # Calculate overall score
-            overall_score = self.calculate_overall_score(tech_score, fund_score, sent_score)
-
-            return {
-                'technical_score': tech_score,
-                'fundamental_score': fund_score,
-                'sentiment_score': sent_score,
-                'overall_score': overall_score,
-                'weights': self.WEIGHTS,
-            }
-
-        except Exception as e:
-            self.logger.error(f"Error in scoring: {str(e)}")
-            return {
-                'technical_score': 50.0,
-                'fundamental_score': 50.0,
-                'sentiment_score': 50.0,
-                'overall_score': 50.0,
-                'weights': self.WEIGHTS,
-            }
-
-    # ==================== Score Rating ====================
+        return {
+            'technical_score': technical_score,
+            'fundamental_score': fundamental_score,
+            'sentiment_score': sentiment_score,
+            'overall_score': self.calculate_overall_score(
+                technical_score, fundamental_score, sentiment_score),
+            'weights': dict(self.weights),
+        }
 
     @staticmethod
     def get_rating(score: float) -> str:
-        """
-        Get investment rating from overall score
-
-        Args:
-            score: Overall score (0-100)
-
-        Returns:
-            Rating string
-        """
+        """Map an overall score onto an action label."""
         if score >= 80:
             return "STRONG BUY"
-        elif score >= 65:
+        if score >= 65:
             return "BUY"
-        elif score >= 50:
+        if score >= 50:
             return "HOLD"
-        elif score >= 35:
+        if score >= 35:
             return "SELL"
-        else:
-            return "STRONG SELL"
+        return "STRONG SELL"
 
 
-# Example usage
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    scorer = StockScorer()
+    # Exercise the config.yml style keys, which used to raise a KeyError.
+    scorer = StockScorer(weights={
+        'technical_weight': 0.40,
+        'fundamental_weight': 0.35,
+        'sentiment_weight': 0.25,
+    })
 
-    # Example data
-    technical_data = {
+    technical = {
         'moving_averages': {'trend': 'uptrend'},
-        'rsi': 55,
+        'rsi': 42,
+        'macd': {'macd': 1.0, 'signal': 0.5, 'histogram': 0.5},
         'macd_signal': 'buy',
+        'bollinger_bands': {'upper': 110, 'middle': 100, 'lower': 90},
         'bollinger_signal': 'buy',
+        'volume': {'volume_ratio': 1.8},
         'volume_signal': 'strong',
     }
-
-    fundamental_data = {
-        'pe_ratio': {'score': 75},
-        'roe': {'score': 85},
-        'profit_margin': {'score': 70},
-        'debt_to_equity': {'score': 80},
-        'revenue_growth': {'score': 75},
-        'earnings_growth': {'score': 80},
-        'dividend_yield': {'score': 65},
-        'overall_score': 75,
+    fundamental = {
+        'pe_ratio': {'score': 75.0},
+        'roe': {'score': 85.0},
+        'profit_margin': {'score': 75.0},
+        'debt_to_equity': {'score': 85.0},
+        'revenue_growth': {'score': 75.0},
+        'earnings_growth': {'score': 85.0},
+        'dividend_yield': {'score': None},
     }
 
-    news_sentiment = {
-        'sentiments': ['positive', 'positive', 'neutral'],
-    }
-
-    # Score
-    result = scorer.score(technical_data, fundamental_data, news_sentiment)
-
-    print(f"Technical Score: {result['technical_score']}")
-    print(f"Fundamental Score: {result['fundamental_score']}")
-    print(f"Sentiment Score: {result['sentiment_score']}")
-    print(f"Overall Score: {result['overall_score']}")
-    print(f"Rating: {scorer.get_rating(result['overall_score'])}") 
+    out = scorer.score(technical, fundamental)
+    print(out)
+    print("Rating:", StockScorer.get_rating(out['overall_score']))

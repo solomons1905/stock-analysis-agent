@@ -1,366 +1,293 @@
 """
 Technical Analysis Module
-Calculates technical indicators: RSI, MACD, Moving Averages, Bollinger Bands, Volume
+Calculates RSI, MACD, Moving Averages, Bollinger Bands and volume metrics.
 """
 
-import pandas as pd
-import numpy as np
 import logging
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
+
+import numpy as np
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 
 class TechnicalAnalyzer:
-    """Performs technical analysis on stock price data"""
+    """Performs technical analysis on stock price data."""
 
     def __init__(self):
         self.logger = logging.getLogger(__name__)
 
-    # ==================== Moving Averages ====================
+    # ------------------------------------------------------------------ #
+    # Moving averages
+    # ------------------------------------------------------------------ #
+
     @staticmethod
     def calculate_moving_average(df: pd.DataFrame, period: int = 20) -> pd.Series:
-        """
-        Calculate Simple Moving Average (SMA)
-
-        Args:
-            df: DataFrame with 'close' column
-            period: Number of periods for MA
-
-        Returns:
-            Series with moving average values
-        """
+        """Simple moving average of the close price."""
         return df['close'].rolling(window=period).mean()
 
-    def get_moving_averages(self, df: pd.DataFrame) -> Dict[str, Optional[float]]:
+    def get_moving_averages(self, df: pd.DataFrame) -> Dict:
         """
-        Calculate multiple moving averages: 20, 50, 200 day
+        Calculate the 20/50/200 day moving averages and derive a trend label.
 
-        Args:
-            df: DataFrame with OHLCV data
-
-        Returns:
-            Dictionary with MA20, MA50, MA200 and current trend
+        Longer averages are skipped (set to None) when there is not enough
+        history, instead of discarding the whole result.
         """
-        if len(df) < 200:
-            self.logger.warning(f"Insufficient data for MA calculation. Need 200+ days, got {len(df)}")
+        if df is None or df.empty or 'close' not in df.columns:
             return {}
 
-        ma20 = self.calculate_moving_average(df, 20).iloc[-1]
-        ma50 = self.calculate_moving_average(df, 50).iloc[-1]
-        ma200 = self.calculate_moving_average(df, 200).iloc[-1]
-        current_price = df['close'].iloc[-1]
+        def ma(period: int) -> Optional[float]:
+            if len(df) < period:
+                return None
+            value = self.calculate_moving_average(df, period).iloc[-1]
+            return None if pd.isna(value) else round(float(value), 2)
 
-        # Determine trend
-        if current_price > ma20 > ma50 > ma200:
-            trend = "strong_uptrend"
-        elif current_price > ma50 > ma200:
-            trend = "uptrend"
-        elif current_price < ma20 < ma50 < ma200:
-            trend = "strong_downtrend"
-        elif current_price < ma50 < ma200:
-            trend = "downtrend"
-        else:
-            trend = "neutral"
+        ma20, ma50, ma200 = ma(20), ma(50), ma(200)
+        current_price = float(df['close'].iloc[-1])
+
+        # Compare only against the averages we actually have.
+        trend = "neutral"
+        if ma20 and ma50 and ma200:
+            if current_price > ma20 > ma50 > ma200:
+                trend = "strong_uptrend"
+            elif current_price > ma50 > ma200:
+                trend = "uptrend"
+            elif current_price < ma20 < ma50 < ma200:
+                trend = "strong_downtrend"
+            elif current_price < ma50 < ma200:
+                trend = "downtrend"
+        elif ma20 and ma50:
+            if current_price > ma20 > ma50:
+                trend = "uptrend"
+            elif current_price < ma20 < ma50:
+                trend = "downtrend"
 
         return {
-            'ma20': round(ma20, 2),
-            'ma50': round(ma50, 2),
-            'ma200': round(ma200, 2),
+            'ma20': ma20,
+            'ma50': ma50,
+            'ma200': ma200,
             'current_price': round(current_price, 2),
-            'trend': trend
+            'trend': trend,
         }
 
-    # ==================== RSI (Relative Strength Index) ====================
+    # ------------------------------------------------------------------ #
+    # RSI
+    # ------------------------------------------------------------------ #
+
     @staticmethod
     def calculate_rsi(df: pd.DataFrame, period: int = 14) -> Optional[float]:
         """
-        Calculate RSI (Relative Strength Index)
-        RSI < 30 = oversold (potential buy)
-        RSI > 70 = overbought (potential sell)
+        Relative Strength Index.
 
-        Args:
-            df: DataFrame with 'close' column
-            period: Period for RSI (default 14)
-
-        Returns:
-            RSI value or None if insufficient data
+        RSI below 30 is considered oversold, above 70 overbought.
         """
-        if len(df) < period + 1:
+        if df is None or len(df) < period + 1 or 'close' not in df.columns:
             return None
 
-        close = df['close']
+        delta = df['close'].diff()
+        gain = delta.clip(lower=0).rolling(window=period).mean()
+        loss = (-delta.clip(upper=0)).rolling(window=period).mean()
 
-        # Calculate price changes
-        delta = close.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        last_gain = gain.iloc[-1]
+        last_loss = loss.iloc[-1]
 
-        # Calculate RS and RSI
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
+        if pd.isna(last_gain) or pd.isna(last_loss):
+            return None
 
-        return round(rsi.iloc[-1], 2)
+        # No losses in the window means a maximal RSI; guard the division.
+        if last_loss == 0:
+            return 100.0 if last_gain > 0 else 50.0
 
-    def get_rsi_signal(self, rsi: float) -> str:
-        """
-        Get buy/sell signal from RSI value
+        rs = last_gain / last_loss
+        rsi = 100.0 - (100.0 / (1.0 + rs))
 
-        Args:
-            rsi: RSI value
+        return round(float(rsi), 2)
 
-        Returns:
-            Signal: 'strong_buy', 'buy', 'neutral', 'sell', 'strong_sell'
-        """
+    @staticmethod
+    def get_rsi_signal(rsi: Optional[float]) -> str:
+        """Map an RSI value onto a buy/sell signal."""
+        if rsi is None:
+            return "neutral"
         if rsi < 30:
             return "strong_buy"
-        elif rsi < 45:
+        if rsi < 45:
             return "buy"
-        elif rsi < 55:
+        if rsi < 55:
             return "neutral"
-        elif rsi < 70:
+        if rsi < 70:
             return "sell"
-        else:
-            return "strong_sell"
+        return "strong_sell"
 
-    # ==================== MACD (Moving Average Convergence Divergence) ====================
+    # ------------------------------------------------------------------ #
+    # MACD
+    # ------------------------------------------------------------------ #
+
     @staticmethod
-    def calculate_macd(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> Dict[str, Optional[float]]:
-        """
-        Calculate MACD and Signal line
-
-        Args:
-            df: DataFrame with 'close' column
-            fast: Fast EMA period (default 12)
-            slow: Slow EMA period (default 26)
-            signal: Signal line period (default 9)
-
-        Returns:
-            Dictionary with MACD, Signal, and Histogram
-        """
-        if len(df) < slow + signal:
+    def calculate_macd(df: pd.DataFrame, fast: int = 12, slow: int = 26,
+                       signal: int = 9) -> Dict:
+        """MACD line, signal line and histogram."""
+        if df is None or len(df) < slow + signal or 'close' not in df.columns:
             return {}
 
         close = df['close']
+        ema_fast = close.ewm(span=fast, adjust=False).mean()
+        ema_slow = close.ewm(span=slow, adjust=False).mean()
 
-        # Calculate EMAs
-        ema_fast = close.ewm(span=fast).mean()
-        ema_slow = close.ewm(span=slow).mean()
-
-        # Calculate MACD and Signal
         macd = ema_fast - ema_slow
-        macd_signal = macd.ewm(span=signal).mean()
+        macd_signal = macd.ewm(span=signal, adjust=False).mean()
         histogram = macd - macd_signal
 
+        if pd.isna(macd.iloc[-1]) or pd.isna(macd_signal.iloc[-1]):
+            return {}
+
         return {
-            'macd': round(macd.iloc[-1], 4),
-            'signal': round(macd_signal.iloc[-1], 4),
-            'histogram': round(histogram.iloc[-1], 4),
+            'macd': round(float(macd.iloc[-1]), 4),
+            'signal': round(float(macd_signal.iloc[-1]), 4),
+            'histogram': round(float(histogram.iloc[-1]), 4),
         }
 
-    def get_macd_signal(self, macd_data: Dict) -> str:
-        """
-        Get buy/sell signal from MACD
-
-        Args:
-            macd_data: Dictionary with macd, signal, histogram
-
-        Returns:
-            Signal: 'buy', 'sell', or 'neutral'
-        """
+    @staticmethod
+    def get_macd_signal(macd_data: Dict) -> str:
+        """Buy when the MACD sits above its signal line, sell when below."""
         if not macd_data:
             return "neutral"
 
-        macd = macd_data.get('macd', 0)
-        signal = macd_data.get('signal', 0)
-        histogram = macd_data.get('histogram', 0)
+        macd = macd_data.get('macd', 0.0)
+        signal = macd_data.get('signal', 0.0)
+        histogram = macd_data.get('histogram', 0.0)
 
         if histogram > 0 and macd > signal:
             return "buy"
-        elif histogram < 0 and macd < signal:
+        if histogram < 0 and macd < signal:
             return "sell"
-        else:
-            return "neutral"
+        return "neutral"
 
-    # ==================== Bollinger Bands ====================
+    # ------------------------------------------------------------------ #
+    # Bollinger Bands
+    # ------------------------------------------------------------------ #
+
     @staticmethod
-    def calculate_bollinger_bands(df: pd.DataFrame, period: int = 20, std_dev: int = 2) -> Dict[str, Optional[float]]:
-        """
-        Calculate Bollinger Bands
-
-        Args:
-            df: DataFrame with 'close' column
-            period: Period for SMA (default 20)
-            std_dev: Standard deviation multiplier (default 2)
-
-        Returns:
-            Dictionary with upper band, middle band, lower band
-        """
-        if len(df) < period:
+    def calculate_bollinger_bands(df: pd.DataFrame, period: int = 20,
+                                  std_dev: float = 2.0) -> Dict:
+        """Upper, middle and lower Bollinger Bands."""
+        if df is None or len(df) < period or 'close' not in df.columns:
             return {}
 
         close = df['close']
-
-        # Calculate SMA and standard deviation
         sma = close.rolling(window=period).mean()
         std = close.rolling(window=period).std()
 
-        # Calculate bands
-        upper = sma + (std * std_dev)
-        lower = sma - (std * std_dev)
+        if pd.isna(sma.iloc[-1]) or pd.isna(std.iloc[-1]):
+            return {}
+
+        middle = float(sma.iloc[-1])
+        spread = float(std.iloc[-1]) * std_dev
 
         return {
-            'upper': round(upper.iloc[-1], 2),
-            'middle': round(sma.iloc[-1], 2),
-            'lower': round(lower.iloc[-1], 2),
+            'upper': round(middle + spread, 2),
+            'middle': round(middle, 2),
+            'lower': round(middle - spread, 2),
         }
 
-    def get_bollinger_signal(self, current_price: float, bb_data: Dict) -> str:
-        """
-        Get buy/sell signal from Bollinger Bands
-
-        Args:
-            current_price: Current stock price
-            bb_data: Dictionary with upper, middle, lower
-
-        Returns:
-            Signal: 'buy', 'sell', or 'neutral'
-        """
-        if not bb_data:
+    @staticmethod
+    def get_bollinger_signal(current_price: float, bb_data: Dict) -> str:
+        """Price below the lower band is oversold, above the upper band overbought."""
+        if not bb_data or not current_price:
             return "neutral"
 
-        upper = bb_data.get('upper', 0)
-        lower = bb_data.get('lower', 0)
-        middle = bb_data.get('middle', 0)
+        upper = bb_data.get('upper')
+        lower = bb_data.get('lower')
+        middle = bb_data.get('middle')
 
-        if current_price < lower:
-            return "buy"  # Oversold
-        elif current_price > upper:
-            return "sell"  # Overbought
-        elif current_price < middle:
-            return "buy"  # Below middle
-        else:
-            return "sell"  # Above middle
+        if lower is not None and current_price < lower:
+            return "strong_buy"
+        if upper is not None and current_price > upper:
+            return "strong_sell"
+        if middle is not None and current_price < middle:
+            return "buy"
+        return "sell"
 
-    # ==================== Volume Analysis ====================
+    # ------------------------------------------------------------------ #
+    # Volume
+    # ------------------------------------------------------------------ #
+
     @staticmethod
-    def analyze_volume(df: pd.DataFrame, period: int = 20) -> Dict[str, Optional[float]]:
-        """
-        Analyze volume trends
-
-        Args:
-            df: DataFrame with 'volume' column
-            period: Period for average volume
-
-        Returns:
-            Dictionary with volume metrics
-        """
-        if len(df) < period or 'volume' not in df.columns:
+    def analyze_volume(df: pd.DataFrame, period: int = 20) -> Dict:
+        """Compare the latest volume against its recent average."""
+        if df is None or len(df) < period or 'volume' not in df.columns:
             return {}
 
         current_volume = df['volume'].iloc[-1]
         avg_volume = df['volume'].tail(period).mean()
-        volume_trend = current_volume / avg_volume if avg_volume > 0 else 0
+
+        if pd.isna(current_volume) or pd.isna(avg_volume) or avg_volume <= 0:
+            return {}
 
         return {
             'current_volume': int(current_volume),
-            'avg_volume': round(avg_volume),
-            'volume_ratio': round(volume_trend, 2),  # > 1 means above average
+            'avg_volume': int(avg_volume),
+            'volume_ratio': round(float(current_volume) / float(avg_volume), 2),
         }
 
-    def get_volume_signal(self, volume_data: Dict, price_trend: str) -> str:
-        """
-        Get signal from volume analysis
-
-        Args:
-            volume_data: Dictionary with volume metrics
-            price_trend: 'uptrend' or 'downtrend'
-
-        Returns:
-            Signal confidence: 'strong', 'weak', or 'neutral'
-        """
+    @staticmethod
+    def get_volume_signal(volume_data: Dict) -> str:
+        """High relative volume confirms the prevailing move."""
         if not volume_data:
             return "neutral"
 
-        ratio = volume_data.get('volume_ratio', 1)
+        ratio = volume_data.get('volume_ratio', 1.0)
 
         if ratio > 1.5:
-            return "strong"  # High volume confirms trend
-        elif ratio < 0.7:
-            return "weak"  # Low volume, trend may reverse
-        else:
-            return "neutral"
+            return "strong"
+        if ratio < 0.7:
+            return "weak"
+        return "neutral"
 
-    # ==================== Full Technical Analysis ====================
+    # ------------------------------------------------------------------ #
+    # Full analysis
+    # ------------------------------------------------------------------ #
+
     def analyze(self, df: pd.DataFrame, symbol: str = "") -> Dict:
-        """
-        Perform complete technical analysis on stock data
-
-        Args:
-            df: DataFrame with OHLCV data
-            symbol: Stock symbol (for logging)
-
-        Returns:
-            Dictionary with all technical indicators
-        """
-        if df is None or len(df) < 50:
-            self.logger.warning(f"Insufficient data for technical analysis of {symbol}")
+        """Run every indicator and return the combined result."""
+        if df is None or len(df) < 30:
+            self.logger.warning("Not enough history for technical analysis of %s", symbol)
             return {}
 
         try:
-            # Calculate all indicators
             ma_data = self.get_moving_averages(df)
             rsi = self.calculate_rsi(df)
             macd_data = self.calculate_macd(df)
             bb_data = self.calculate_bollinger_bands(df)
             volume_data = self.analyze_volume(df)
 
-            # Get current price for Bollinger Bands signal
-            current_price = df['close'].iloc[-1] if 'close' in df.columns else 0
-
-            # Get signals
-            rsi_signal = self.get_rsi_signal(rsi) if rsi else "neutral"
-            macd_signal = self.get_macd_signal(macd_data)
-            bb_signal = self.get_bollinger_signal(current_price, bb_data)
-            volume_signal = self.get_volume_signal(volume_data, ma_data.get('trend', ''))
+            current_price = float(df['close'].iloc[-1])
 
             return {
                 'moving_averages': ma_data,
                 'rsi': rsi,
-                'rsi_signal': rsi_signal,
+                'rsi_signal': self.get_rsi_signal(rsi),
                 'macd': macd_data,
-                'macd_signal': macd_signal,
+                'macd_signal': self.get_macd_signal(macd_data),
                 'bollinger_bands': bb_data,
-                'bollinger_signal': bb_signal,
+                'bollinger_signal': self.get_bollinger_signal(current_price, bb_data),
                 'volume': volume_data,
-                'volume_signal': volume_signal,
+                'volume_signal': self.get_volume_signal(volume_data),
             }
 
-        except Exception as e:
-            self.logger.error(f"Error in technical analysis for {symbol}: {str(e)}")
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("Technical analysis failed for %s: %s", symbol, exc)
             return {}
 
 
-# Example usage
 if __name__ == "__main__":
     import yfinance as yf
 
     logging.basicConfig(level=logging.INFO)
 
-    analyzer = TechnicalAnalyzer()
+    data = yf.Ticker('AAPL').history(period='1y', auto_adjust=True)
+    data.columns = [c.lower() for c in data.columns]
 
-    # Fetch sample data
-    print("Fetching AAPL data...")
-    aapl = yf.Ticker('AAPL')
-    df = aapl.history(period='1y')
-    df.columns = df.columns.str.lower()
-
-    # Analyze
-    print("\nPerforming technical analysis...")
-    result = analyzer.analyze(df, 'AAPL')
-
-    print(f"\nMoving Averages: {result['moving_averages']}")
-    print(f"RSI: {result['rsi']} (Signal: {result['rsi_signal']})")
-    print(f"MACD: {result['macd']} (Signal: {result['macd_signal']})")
-    print(f"Bollinger Bands: {result['bollinger_bands']} (Signal: {result['bollinger_signal']})")
-    print(f"Volume: {result['volume']} (Signal: {result['volume_signal']})") 
+    result = TechnicalAnalyzer().analyze(data, 'AAPL')
+    for key, value in result.items():
+        print(f"{key}: {value}")

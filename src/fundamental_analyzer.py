@@ -1,6 +1,6 @@
 """
 Fundamental Analysis Module
-Analyzes financial metrics: P/E ratio, ROE, Growth rates, Debt ratios, etc.
+Scores financial metrics: P/E, ROE, margins, debt, growth and dividend yield.
 """
 
 import logging
@@ -8,335 +8,271 @@ from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Marker used when a metric is missing so it can be excluded from the average.
+NO_DATA = "no_data"
+
+
+def _as_percent(value: Optional[float]) -> Optional[float]:
+    """
+    Normalise a ratio to a percentage.
+
+    yfinance returns some figures as a fraction (0.15 for 15%) and others
+    already as a percentage. Values inside (-1, 1) are treated as fractions.
+    """
+    if value is None:
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    return value * 100.0 if -1.0 < value < 1.0 else value
+
 
 class FundamentalAnalyzer:
-    """Performs fundamental analysis on stock financial data"""
+    """Scores a company's financial metrics on a 0-100 scale."""
 
     def __init__(self):
         self.logger = logging.getLogger(__name__)
 
-    # ==================== Valuation Metrics ====================
+    # ------------------------------------------------------------------ #
+    # Valuation
+    # ------------------------------------------------------------------ #
 
     @staticmethod
-    def analyze_pe_ratio(pe_ratio: Optional[float]) -> Tuple[str, float]:
-        """
-        Analyze Price-to-Earnings ratio
-        Good P/E varies by industry, typically 15-25 is reasonable
+    def analyze_pe_ratio(pe_ratio: Optional[float]) -> Tuple[str, Optional[float]]:
+        """Price-to-earnings. A negative P/E means the company is loss-making."""
+        if pe_ratio is None:
+            return NO_DATA, None
 
-        Args:
-            pe_ratio: P/E ratio value
+        try:
+            pe_ratio = float(pe_ratio)
+        except (TypeError, ValueError):
+            return NO_DATA, None
 
-        Returns:
-            Tuple of (assessment, score 0-100)
-        """
-        if pe_ratio is None or pe_ratio <= 0:
-            return "no_data", 50.0
-
+        if pe_ratio <= 0:
+            return "loss_making", 25.0
         if pe_ratio < 10:
             return "very_cheap", 90.0
-        elif pe_ratio < 15:
+        if pe_ratio < 15:
             return "cheap", 80.0
-        elif pe_ratio < 25:
+        if pe_ratio < 25:
             return "fair", 70.0
-        elif pe_ratio < 35:
+        if pe_ratio < 35:
             return "expensive", 40.0
-        else:
-            return "very_expensive", 20.0
+        return "very_expensive", 20.0
 
     @staticmethod
-    def analyze_roe(roe: Optional[float]) -> Tuple[str, float]:
-        """
-        Analyze Return on Equity
-        Higher is better. > 15% is good, > 20% is excellent
-
-        Args:
-            roe: ROE percentage value
-
-        Returns:
-            Tuple of (assessment, score 0-100)
-        """
+    def analyze_roe(roe: Optional[float]) -> Tuple[str, Optional[float]]:
+        """Return on equity. Above 15% is good, above 25% excellent."""
+        roe = _as_percent(roe)
         if roe is None:
-            return "no_data", 50.0
-
-        # Convert to percentage if needed
-        roe = roe * 100 if roe < 1 else roe
+            return NO_DATA, None
 
         if roe > 25:
             return "excellent", 95.0
-        elif roe > 20:
+        if roe > 20:
             return "very_good", 85.0
-        elif roe > 15:
+        if roe > 15:
             return "good", 75.0
-        elif roe > 10:
+        if roe > 10:
             return "acceptable", 60.0
-        elif roe > 0:
+        if roe > 0:
             return "weak", 40.0
-        else:
-            return "poor", 10.0
+        return "poor", 10.0
 
     @staticmethod
-    def analyze_profit_margin(margin: Optional[float]) -> Tuple[str, float]:
-        """
-        Analyze Net Profit Margin
-        Higher is better. Varies by industry
-
-        Args:
-            margin: Profit margin as decimal (e.g., 0.15 for 15%)
-
-        Returns:
-            Tuple of (assessment, score 0-100)
-        """
+    def analyze_profit_margin(margin: Optional[float]) -> Tuple[str, Optional[float]]:
+        """Net profit margin."""
+        margin = _as_percent(margin)
         if margin is None:
-            return "no_data", 50.0
-
-        # Ensure it's in percentage form
-        margin = margin * 100 if margin < 1 else margin
+            return NO_DATA, None
 
         if margin > 20:
             return "excellent", 95.0
-        elif margin > 15:
+        if margin > 15:
             return "very_good", 85.0
-        elif margin > 10:
+        if margin > 10:
             return "good", 75.0
-        elif margin > 5:
+        if margin > 5:
             return "acceptable", 60.0
-        elif margin > 0:
+        if margin > 0:
             return "weak", 40.0
-        else:
-            return "poor", 10.0
+        return "poor", 10.0
 
     @staticmethod
-    def analyze_debt_to_equity(d2e: Optional[float]) -> Tuple[str, float]:
+    def analyze_debt_to_equity(d2e: Optional[float]) -> Tuple[str, Optional[float]]:
         """
-        Analyze Debt-to-Equity ratio
-        Lower is better. Safe range: < 2.0, Ideal: < 1.0
+        Debt-to-equity ratio. Lower is safer.
 
-        Args:
-            d2e: Debt-to-Equity ratio
-
-        Returns:
-            Tuple of (assessment, score 0-100)
+        yfinance reports this as a percentage (145.0 means a ratio of 1.45),
+        so anything above 5 is rescaled before being graded.
         """
-        if d2e is None or d2e < 0:
-            return "no_data", 50.0
+        if d2e is None:
+            return NO_DATA, None
+
+        try:
+            d2e = float(d2e)
+        except (TypeError, ValueError):
+            return NO_DATA, None
+
+        if d2e < 0:
+            return NO_DATA, None
+
+        if d2e > 5:
+            d2e = d2e / 100.0
 
         if d2e < 0.5:
             return "very_low", 95.0
-        elif d2e < 1.0:
+        if d2e < 1.0:
             return "low", 85.0
-        elif d2e < 1.5:
+        if d2e < 1.5:
             return "moderate", 75.0
-        elif d2e < 2.0:
+        if d2e < 2.0:
             return "elevated", 60.0
-        elif d2e < 3.0:
+        if d2e < 3.0:
             return "high", 40.0
-        else:
-            return "very_high", 20.0
+        return "very_high", 20.0
 
-    # ==================== Growth Metrics ====================
+    # ------------------------------------------------------------------ #
+    # Growth
+    # ------------------------------------------------------------------ #
 
     @staticmethod
-    def analyze_revenue_growth(growth: Optional[float]) -> Tuple[str, float]:
-        """
-        Analyze Revenue Growth rate
-        Annual growth rate. > 10% is good for established companies
-
-        Args:
-            growth: Growth rate as decimal (e.g., 0.15 for 15%)
-
-        Returns:
-            Tuple of (assessment, score 0-100)
-        """
+    def analyze_revenue_growth(growth: Optional[float]) -> Tuple[str, Optional[float]]:
+        """Year-on-year revenue growth."""
+        growth = _as_percent(growth)
         if growth is None:
-            return "no_data", 50.0
-
-        # Ensure it's in percentage
-        growth = growth * 100 if growth < 1 and growth > -1 else growth
+            return NO_DATA, None
 
         if growth > 30:
             return "excellent", 95.0
-        elif growth > 20:
+        if growth > 20:
             return "very_good", 85.0
-        elif growth > 10:
+        if growth > 10:
             return "good", 75.0
-        elif growth > 5:
+        if growth > 5:
             return "acceptable", 60.0
-        elif growth > 0:
+        if growth > 0:
             return "weak", 40.0
-        else:
-            return "negative", 20.0
+        return "negative", 20.0
 
     @staticmethod
-    def analyze_earnings_growth(growth: Optional[float]) -> Tuple[str, float]:
-        """
-        Analyze Earnings Growth rate
-        Earnings growth should match or exceed revenue growth
-
-        Args:
-            growth: Growth rate as decimal
-
-        Returns:
-            Tuple of (assessment, score 0-100)
-        """
+    def analyze_earnings_growth(growth: Optional[float]) -> Tuple[str, Optional[float]]:
+        """Year-on-year earnings growth."""
+        growth = _as_percent(growth)
         if growth is None:
-            return "no_data", 50.0
-
-        growth = growth * 100 if growth < 1 and growth > -1 else growth
+            return NO_DATA, None
 
         if growth > 30:
             return "excellent", 95.0
-        elif growth > 20:
+        if growth > 20:
             return "very_good", 85.0
-        elif growth > 15:
+        if growth > 15:
             return "good", 75.0
-        elif growth > 10:
+        if growth > 10:
             return "acceptable", 60.0
-        elif growth > 0:
+        if growth > 0:
             return "weak", 40.0
-        else:
-            return "negative", 20.0
+        return "negative", 20.0
 
-    # ==================== Dividend Analysis ====================
+    # ------------------------------------------------------------------ #
+    # Dividend
+    # ------------------------------------------------------------------ #
 
     @staticmethod
-    def analyze_dividend_yield(yield_pct: Optional[float]) -> Tuple[str, float]:
+    def analyze_dividend_yield(yield_pct: Optional[float]) -> Tuple[str, Optional[float]]:
         """
-        Analyze Dividend Yield
-        Average is 2-3%, higher yields can indicate value stocks
+        Dividend yield.
 
-        Args:
-            yield_pct: Dividend yield as decimal (e.g., 0.03 for 3%)
-
-        Returns:
-            Tuple of (assessment, score 0-100)
+        A missing or zero yield is not a negative signal (growth companies
+        often pay nothing), so it is reported without a score.
         """
-        if yield_pct is None or yield_pct < 0:
-            return "no_yield", 50.0
+        yield_pct = _as_percent(yield_pct)
+        if yield_pct is None or yield_pct <= 0:
+            return "no_dividend", None
 
-        yield_pct = yield_pct * 100 if yield_pct < 1 else yield_pct
-
-        if yield_pct > 8:
-            return "very_high", 70.0
-        elif yield_pct > 5:
-            return "high", 75.0
-        elif yield_pct > 3:
-            return "good", 70.0
-        elif yield_pct > 2:
+        if yield_pct > 10:
+            return "suspiciously_high", 55.0
+        if yield_pct > 5:
+            return "high", 80.0
+        if yield_pct > 3:
+            return "good", 75.0
+        if yield_pct > 1.5:
             return "fair", 65.0
-        elif yield_pct > 0.5:
-            return "low", 55.0
-        else:
-            return "no_yield", 50.0
+        return "low", 55.0
 
-    # ==================== Complete Fundamental Analysis ====================
+    # ------------------------------------------------------------------ #
+    # Full analysis
+    # ------------------------------------------------------------------ #
 
     def analyze(self, fundamental_data: Dict) -> Dict:
         """
-        Perform complete fundamental analysis
+        Score every available metric.
 
-        Args:
-            fundamental_data: Dictionary with financial metrics from yfinance
-
-        Returns:
-            Dictionary with analyzed metrics and overall score
+        Metrics without data are excluded from the average rather than being
+        counted as neutral, so a company with two strong figures is not
+        dragged down to 50 by five missing ones.
         """
         if not fundamental_data:
-            self.logger.warning("No fundamental data provided")
             return {}
 
         try:
             symbol = fundamental_data.get('symbol', 'UNKNOWN')
 
-            # Valuation metrics
-            pe_ratio = fundamental_data.get('pe_ratio')
-            pe_assessment, pe_score = self.analyze_pe_ratio(pe_ratio)
+            metrics = {
+                'pe_ratio': self.analyze_pe_ratio(fundamental_data.get('pe_ratio')),
+                'roe': self.analyze_roe(fundamental_data.get('roe')),
+                'profit_margin': self.analyze_profit_margin(
+                    fundamental_data.get('profit_margin')),
+                'debt_to_equity': self.analyze_debt_to_equity(
+                    fundamental_data.get('debt_to_equity')),
+                'revenue_growth': self.analyze_revenue_growth(
+                    fundamental_data.get('revenue_growth')),
+                'earnings_growth': self.analyze_earnings_growth(
+                    fundamental_data.get('earnings_growth')),
+                'dividend_yield': self.analyze_dividend_yield(
+                    fundamental_data.get('dividend_yield')),
+            }
 
-            roe = fundamental_data.get('roe')
-            roe_assessment, roe_score = self.analyze_roe(roe)
-
-            profit_margin = fundamental_data.get('profit_margin')
-            margin_assessment, margin_score = self.analyze_profit_margin(profit_margin)
-
-            d2e = fundamental_data.get('debt_to_equity')
-            d2e_assessment, d2e_score = self.analyze_debt_to_equity(d2e)
-
-            # Growth metrics
-            revenue_growth = fundamental_data.get('revenue_growth')
-            rev_growth_assessment, rev_growth_score = self.analyze_revenue_growth(revenue_growth)
-
-            earnings_growth = fundamental_data.get('earnings_growth')
-            earn_growth_assessment, earn_growth_score = self.analyze_earnings_growth(earnings_growth)
-
-            # Dividend
-            div_yield = fundamental_data.get('dividend_yield')
-            div_assessment, div_score = self.analyze_dividend_yield(div_yield)
-
-            # Calculate overall fundamental score
-            scores = [pe_score, roe_score, margin_score, d2e_score, rev_growth_score, earn_growth_score, div_score]
-            scores = [s for s in scores if s is not None]  # Remove None values
-            fundamental_score = sum(scores) / len(scores) if scores else 50.0
-
-            return {
+            result: Dict = {
                 'symbol': symbol,
-                'pe_ratio': {
-                    'value': pe_ratio,
-                    'assessment': pe_assessment,
-                    'score': pe_score
-                },
-                'roe': {
-                    'value': roe,
-                    'assessment': roe_assessment,
-                    'score': roe_score
-                },
-                'profit_margin': {
-                    'value': profit_margin,
-                    'assessment': margin_assessment,
-                    'score': margin_score
-                },
-                'debt_to_equity': {
-                    'value': d2e,
-                    'assessment': d2e_assessment,
-                    'score': d2e_score
-                },
-                'revenue_growth': {
-                    'value': revenue_growth,
-                    'assessment': rev_growth_assessment,
-                    'score': rev_growth_score
-                },
-                'earnings_growth': {
-                    'value': earnings_growth,
-                    'assessment': earn_growth_assessment,
-                    'score': earn_growth_score
-                },
-                'dividend_yield': {
-                    'value': div_yield,
-                    'assessment': div_assessment,
-                    'score': div_score
-                },
-                'overall_score': round(fundamental_score, 2),
                 'sector': fundamental_data.get('sector'),
                 'industry': fundamental_data.get('industry'),
             }
 
-        except Exception as e:
-            self.logger.error(f"Error in fundamental analysis: {str(e)}")
+            available_scores = []
+            for name, (assessment, score) in metrics.items():
+                result[name] = {
+                    'value': fundamental_data.get(name),
+                    'assessment': assessment,
+                    'score': score,
+                }
+                if score is not None:
+                    available_scores.append(score)
+
+            if available_scores:
+                result['overall_score'] = round(
+                    sum(available_scores) / len(available_scores), 2)
+                result['metrics_available'] = len(available_scores)
+            else:
+                result['overall_score'] = 50.0
+                result['metrics_available'] = 0
+
+            return result
+
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("Fundamental analysis failed: %s", exc)
             return {}
 
 
-# Example usage
 if __name__ == "__main__":
     import yfinance as yf
 
     logging.basicConfig(level=logging.INFO)
 
-    analyzer = FundamentalAnalyzer()
-
-    # Fetch fundamental data
-    print("Fetching AAPL fundamental data...")
-    ticker = yf.Ticker('AAPL')
-    info = ticker.info
-
-    fundamental_data = {
+    info = yf.Ticker('AAPL').info
+    payload = {
         'symbol': 'AAPL',
         'pe_ratio': info.get('trailingPE'),
         'roe': info.get('returnOnEquity'),
@@ -345,19 +281,8 @@ if __name__ == "__main__":
         'revenue_growth': info.get('revenueGrowth'),
         'earnings_growth': info.get('earningsGrowth'),
         'dividend_yield': info.get('dividendYield'),
-        'sector': info.get('sector'),
-        'industry': info.get('industry'),
     }
 
-    # Analyze
-    print("\nPerforming fundamental analysis...")
-    result = analyzer.analyze(fundamental_data)
-
-    print(f"\nP/E Ratio: {result['pe_ratio']}")
-    print(f"ROE: {result['roe']}")
-    print(f"Profit Margin: {result['profit_margin']}")
-    print(f"Debt-to-Equity: {result['debt_to_equity']}")
-    print(f"Revenue Growth: {result['revenue_growth']}")
-    print(f"Earnings Growth: {result['earnings_growth']}")
-    print(f"Dividend Yield: {result['dividend_yield']}")
-    print(f"\nOverall Fundamental Score: {result['overall_score']}/100") 
+    out = FundamentalAnalyzer().analyze(payload)
+    for key, value in out.items():
+        print(f"{key}: {value}")

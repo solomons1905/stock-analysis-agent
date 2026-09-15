@@ -1,74 +1,44 @@
-# Stock Analysis Agent Configuration
+# Stock Analysis Agent - configuration
 
-# Markets to analyze
+# Which markets to analyse
 markets:
   israel:
     enabled: true
-    exchange: "TA"  # Tel Aviv Stock Exchange
-    symbols: ["TASE:*"]  # Will fetch top companies
-
+    exchange: "TASE"
   usa:
     enabled: true
     exchanges: ["NASDAQ", "NYSE"]
-    symbols: []  # Will use predefined list
 
-# Analysis settings
-analysis:
-  technical:
-    enabled: true
-    indicators:
-      - rsi
-      - macd
-      - moving_averages
-      - bollinger_bands
-      - volume_analysis
-
-  fundamental:
-    enabled: true
-    metrics:
-      - pe_ratio
-      - roe
-      - revenue_growth
-      - profit_margin
-      - debt_to_equity
-
-# Scoring weights
+# How much each dimension contributes to the final 0-100 score.
+# The three weights are normalised automatically if they do not sum to 1.
 scoring:
   technical_weight: 0.40
   fundamental_weight: 0.35
   sentiment_weight: 0.25
 
-# Recommendation thresholds
-recommendations:
-  strong_buy_threshold: 75
-  buy_threshold: 60
-  sell_threshold: 40
-  strong_sell_threshold: 25
-
-# Risk management
+# Risk management applied to BUY recommendations.
+# STRONG BUY signals use a tighter 2% stop and a 20% target.
 risk:
   default_stop_loss_percent: 3.0
   default_take_profit_percent: 15.0
   max_allocation_per_stock: 5.0
 
-# Scheduling
+# Score thresholds, for reference. The mapping lives in src/recommender.py.
+#   80-100  STRONG BUY
+#   65-79   BUY
+#   50-64   HOLD
+#   35-49   SELL
+#    0-34   STRONG SELL
+
+# When the analysis runs. The schedule itself is set by the cron expression
+# in .github/workflows/daily_analysis.yml; this is documentation.
 schedule:
-  run_time: "14:00"  # Daily at 2:00 PM (14:00) Israel time
+  run_time: "14:00"
   timezone: "Asia/Jerusalem"
 
-# Notifications
 notifications:
   telegram:
     enabled: true
-    bot_token: "${TELEGRAM_BOT_TOKEN}"  # Will be set via environment
-    chat_id: "${TELEGRAM_CHAT_ID}"  # Will be set via environment
-
   reports:
     save_to_file: true
-    file_path: "./reports/"
-
-# Data sources
-data_sources:
-  prices: "yfinance"
-  news: "newsapi"
-  fundamental: "yfinance" 
+    file_path: "reports"
