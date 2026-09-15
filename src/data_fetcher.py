@@ -191,6 +191,37 @@ class DataFetcher:
             'avg_volume': info.get('averageVolume'),
         }
 
+    @staticmethod
+    def _dividend_yield_percent(info: Dict) -> Optional[float]:
+        """
+        Work out the dividend yield as a percentage.
+
+        yfinance's ``dividendYield`` has meant a fraction (0.0032) in some
+        versions and a percentage (0.32) in others, and no magnitude test can
+        tell the two apart for a small yield. The annual dividend rate divided
+        by the share price is unambiguous, so that is tried first.
+        """
+        rate = info.get('dividendRate')
+        price = (info.get('currentPrice')
+                 or info.get('regularMarketPrice')
+                 or info.get('previousClose'))
+
+        if rate and price:
+            try:
+                return float(rate) / float(price) * 100.0
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+
+        # trailingAnnualDividendYield is reliably a fraction.
+        trailing = info.get('trailingAnnualDividendYield')
+        if trailing is not None:
+            try:
+                return float(trailing) * 100.0
+            except (TypeError, ValueError):
+                pass
+
+        return None
+
     def fetch_fundamental_data(self, symbol: str) -> Dict:
         """Fetch fundamental metrics for a stock. Returns {} when unavailable."""
         info = self._get_info(symbol)
@@ -211,7 +242,8 @@ class DataFetcher:
             'earnings_growth': info.get('earningsGrowth'),
             'sector': info.get('sector'),
             'industry': info.get('industry'),
-            'dividend_yield': info.get('dividendYield'),
+            # Normalised to a percentage; see _dividend_yield_percent.
+            'dividend_yield': self._dividend_yield_percent(info),
             'payout_ratio': info.get('payoutRatio'),
         }
 

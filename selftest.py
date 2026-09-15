@@ -99,6 +99,40 @@ check("no data falls back to neutral", empty['overall_score'] == 50.0)
 check("loss-making P/E handled",
       fa.analyze_pe_ratio(-5.0)[0] == 'loss_making')
 
+# Regression: real AAPL figures pulled from yfinance on 2026-09-15.
+# ROE arrives as 1.4875, meaning 148.75%. A magnitude-based guess read that
+# as 1.49% and graded one of the best returns in the S&P 500 as "weak".
+check("ROE above 100% graded as excellent",
+      fa.analyze_roe(1.4875) == ('excellent', 95.0),
+      f"(got {fa.analyze_roe(1.4875)})")
+check("ordinary ROE still correct",
+      fa.analyze_roe(0.18) == ('good', 75.0), f"(got {fa.analyze_roe(0.18)})")
+check("negative ROE graded as poor", fa.analyze_roe(-0.05)[0] == 'poor')
+check("growth above 100% graded as excellent",
+      fa.analyze_revenue_growth(1.5) == ('excellent', 95.0),
+      f"(got {fa.analyze_revenue_growth(1.5)})")
+check("margin above 100% does not wrap around",
+      fa.analyze_profit_margin(1.2)[0] == 'excellent')
+
+from src.data_fetcher import DataFetcher  # noqa: E402
+
+aapl_info = {'dividendRate': 1.06, 'currentPrice': 330.03,
+             'trailingAnnualDividendYield': 0.0032}
+yield_pct = DataFetcher._dividend_yield_percent(aapl_info)
+check("dividend yield derived from rate and price",
+      yield_pct is not None and 0.30 < yield_pct < 0.35,
+      f"(got {yield_pct})")
+check("a 0.32% yield is graded low, not suspiciously high",
+      fa.analyze_dividend_yield(yield_pct)[0] == 'low',
+      f"(got {fa.analyze_dividend_yield(yield_pct)})")
+check("falls back to the trailing fraction when rate is missing",
+      abs(DataFetcher._dividend_yield_percent(
+          {'trailingAnnualDividendYield': 0.042}) - 4.2) < 1e-9)
+check("a real 4% yield is graded good",
+      fa.analyze_dividend_yield(4.2)[0] == 'good')
+check("no dividend data returns None",
+      DataFetcher._dividend_yield_percent({}) is None)
+
 print("\n3. Scoring")
 check("config.yml key style accepted (the old KeyError)",
       StockScorer({'technical_weight': 0.5, 'fundamental_weight': 0.3,

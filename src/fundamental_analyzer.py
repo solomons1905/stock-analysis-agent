@@ -12,21 +12,32 @@ logger = logging.getLogger(__name__)
 NO_DATA = "no_data"
 
 
-def _as_percent(value: Optional[float]) -> Optional[float]:
+def _fraction_to_percent(value: Optional[float]) -> Optional[float]:
     """
-    Normalise a ratio to a percentage.
+    Convert a yfinance fraction into a percentage.
 
-    yfinance returns some figures as a fraction (0.15 for 15%) and others
-    already as a percentage. Values inside (-1, 1) are treated as fractions.
+    returnOnEquity, profitMargins, revenueGrowth and earningsGrowth are always
+    fractions, so they are always multiplied by 100. Do not try to guess based
+    on magnitude: Apple's ROE arrives as 1.4875, meaning 148.75%, and any
+    "is it less than 1" test would read that as 1.49% and grade a world-class
+    company as weak.
     """
     if value is None:
         return None
     try:
-        value = float(value)
+        return float(value) * 100.0
     except (TypeError, ValueError):
         return None
 
-    return value * 100.0 if -1.0 < value < 1.0 else value
+
+def _already_percent(value: Optional[float]) -> Optional[float]:
+    """Pass through a value that yfinance already expresses as a percentage."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class FundamentalAnalyzer:
@@ -65,7 +76,7 @@ class FundamentalAnalyzer:
     @staticmethod
     def analyze_roe(roe: Optional[float]) -> Tuple[str, Optional[float]]:
         """Return on equity. Above 15% is good, above 25% excellent."""
-        roe = _as_percent(roe)
+        roe = _fraction_to_percent(roe)
         if roe is None:
             return NO_DATA, None
 
@@ -84,7 +95,7 @@ class FundamentalAnalyzer:
     @staticmethod
     def analyze_profit_margin(margin: Optional[float]) -> Tuple[str, Optional[float]]:
         """Net profit margin."""
-        margin = _as_percent(margin)
+        margin = _fraction_to_percent(margin)
         if margin is None:
             return NO_DATA, None
 
@@ -141,7 +152,7 @@ class FundamentalAnalyzer:
     @staticmethod
     def analyze_revenue_growth(growth: Optional[float]) -> Tuple[str, Optional[float]]:
         """Year-on-year revenue growth."""
-        growth = _as_percent(growth)
+        growth = _fraction_to_percent(growth)
         if growth is None:
             return NO_DATA, None
 
@@ -160,7 +171,7 @@ class FundamentalAnalyzer:
     @staticmethod
     def analyze_earnings_growth(growth: Optional[float]) -> Tuple[str, Optional[float]]:
         """Year-on-year earnings growth."""
-        growth = _as_percent(growth)
+        growth = _fraction_to_percent(growth)
         if growth is None:
             return NO_DATA, None
 
@@ -185,10 +196,15 @@ class FundamentalAnalyzer:
         """
         Dividend yield.
 
+        The value is expected already as a percentage (3.0 meaning 3%); the
+        data fetcher normalises it from the dividend rate and price, because
+        yfinance's own dividendYield field has meant a fraction in some
+        versions and a percentage in others.
+
         A missing or zero yield is not a negative signal (growth companies
         often pay nothing), so it is reported without a score.
         """
-        yield_pct = _as_percent(yield_pct)
+        yield_pct = _already_percent(yield_pct)
         if yield_pct is None or yield_pct <= 0:
             return "no_dividend", None
 
